@@ -447,4 +447,3 @@ Check:
 - Django server logs
 - Celery worker logs if you are not using local dev sync mode
 - whether FFmpeg and Redis are installed correctly for your chosen setup
-

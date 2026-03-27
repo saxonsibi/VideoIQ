@@ -50,6 +50,8 @@ tmp_test/
 RESTORE_PREPROD_BACKUP/
 backend/benchmark_reports/
 STUDY_GUIDE_CURRENT_SYSTEM.md
+SETUP_GUIDE.md
+PROJECT_DOCUMENTATION.md
 
 # ==============================
 # Editor

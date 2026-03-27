@@ -1,0 +1,74 @@
+services:
+  - type: web
+    name: videoiq-web
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: DJANGO_DEBUG
+        value: "False"
+      - key: DJANGO_ALLOWED_HOSTS
+        value: ".onrender.com"
+      - key: DJANGO_CSRF_TRUSTED_ORIGINS
+        value: "https://videoiq-web.onrender.com"
+      - key: CORS_ALLOWED_ORIGINS
+        value: "https://videoiq-web.onrender.com"
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: videoiq-db
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: keyvalue
+          name: videoiq-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: keyvalue
+          name: videoiq-redis
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+
+  - type: worker
+    name: videoiq-worker
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerCommand: bash -lc "cd /app/backend && celery -A videoiq worker -l info"
+    autoDeploy: true
+    envVars:
+      - key: DJANGO_DEBUG
+        value: "False"
+      - key: DJANGO_ALLOWED_HOSTS
+        value: ".onrender.com"
+      - key: DJANGO_SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: videoiq-db
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: keyvalue
+          name: videoiq-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: keyvalue
+          name: videoiq-redis
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+
+databases:
+  - name: videoiq-db
+    plan: starter
+
+  - name: videoiq-redis
+    type: keyvalue
+    plan: starter

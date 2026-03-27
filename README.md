@@ -269,6 +269,41 @@ To load the extension in Chrome:
 
 Make sure the backend is already running before opening the panel.
 
+## Deploying To Render
+
+This repository is now prepared for a Docker-based Render deployment.
+
+Deployment files:
+
+- `Dockerfile`
+- `.dockerignore`
+- `render.yaml`
+
+Recommended Render layout:
+
+- one web service for Django
+- one worker service for Celery
+- one Postgres database
+- one Redis-compatible Key Value instance
+
+The safest path for this repo is Docker-based deployment because the app depends on FFmpeg, Python native dependencies, frontend build output, and background processing.
+
+Before deploying on Render, make sure you set or verify:
+
+- `DJANGO_SECRET_KEY`
+- `DJANGO_DEBUG=False`
+- `DJANGO_ALLOWED_HOSTS`
+- `DJANGO_CSRF_TRUSTED_ORIGINS`
+- `CORS_ALLOWED_ORIGINS`
+- `DATABASE_URL`
+- `CELERY_BROKER_URL`
+- `CELERY_RESULT_BACKEND`
+- any API provider keys you want enabled in production
+
+Important production note:
+
+- uploaded media stored on the web service filesystem is ephemeral on Render unless you add external object storage or another persistent media strategy
+
 ## Development Notes
 
 Current runtime behavior includes:

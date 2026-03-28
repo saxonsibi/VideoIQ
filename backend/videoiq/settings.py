@@ -210,6 +210,11 @@ DEV_SYNC_RECOVERY_ENABLED = os.environ.get(
 ).lower() in ('true', '1', 'yes')
 DEV_SYNC_RECOVERY_MAX_AGE_SECONDS = int(os.environ.get('DEV_SYNC_RECOVERY_MAX_AGE_SECONDS', '45'))
 DEV_SYNC_RECOVERY_STARTUP_DELAY_SECONDS = int(os.environ.get('DEV_SYNC_RECOVERY_STARTUP_DELAY_SECONDS', '20'))
+DEV_SYNC_MAX_VIDEO_SECONDS = int(os.environ.get('DEV_SYNC_MAX_VIDEO_SECONDS', '480'))
+DEV_SYNC_LITE_MODE = os.environ.get(
+    'DEV_SYNC_LITE_MODE',
+    'True' if DEV_SYNC_MODE else 'False'
+).lower() in ('true', '1', 'yes')
 
 # File Upload Settings
 DATA_UPLOAD_MAX_MEMORY_SIZE = 500 * 1024 * 1024  # 500MB

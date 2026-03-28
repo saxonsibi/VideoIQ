@@ -43,6 +43,45 @@ _VIDEO_INTERRUPTED_STATUSES = {
 }
 
 
+def _sync_mode_max_video_seconds() -> float:
+    try:
+        return max(0.0, float(getattr(settings, 'DEV_SYNC_MAX_VIDEO_SECONDS', 480) or 0.0))
+    except Exception:
+        return 480.0
+
+
+def _sync_mode_lite_enabled() -> bool:
+    return bool(
+        getattr(settings, 'DEV_SYNC_MODE', False)
+        and getattr(settings, 'DEV_SYNC_LITE_MODE', False)
+    )
+
+
+def _ensure_sync_mode_duration_allowed(video, duration_seconds: float, *, source_type: str) -> None:
+    """
+    Keep free/sync deployments from accepting jobs that are too long for the web
+    process to complete reliably.
+    """
+    if not getattr(settings, 'DEV_SYNC_MODE', False):
+        return
+    max_seconds = _sync_mode_max_video_seconds()
+    if max_seconds <= 0:
+        return
+
+    actual_seconds = max(0.0, float(duration_seconds or 0.0))
+    if actual_seconds <= max_seconds:
+        return
+
+    max_minutes = max_seconds / 60.0
+    actual_minutes = actual_seconds / 60.0
+    source_label = 'YouTube video' if source_type == 'youtube' else 'uploaded video'
+    raise ValueError(
+        f"{source_label} is too long for the current live server mode. "
+        f"This deployment currently supports videos up to {max_minutes:.1f} minutes "
+        f"for reliable processing, but this one is {actual_minutes:.1f} minutes."
+    )
+
+
 def _retain_malayalam_debug_audio(
     *,
     video_id,
@@ -2643,6 +2682,7 @@ def _run_audio_pipeline(
     downstream_gate = _evaluate_malayalam_low_evidence_downstream_gate(transcript_obj)
     _persist_malayalam_downstream_gate_metadata(transcript_obj, downstream_gate)
     transcript_obj.save(update_fields=['json_data'])
+    lite_mode = _sync_mode_lite_enabled()
     transcript_json = transcript_obj.json_data if isinstance(transcript_obj.json_data, dict) else {}
     finalized_transcript_state = str(transcript_json.get('transcript_state', '') or '').strip().lower()
     quality_transcript_state = str((quality or {}).get('state', '') or '').strip().lower()
@@ -2717,22 +2757,32 @@ def _run_audio_pipeline(
                 summary_language_mode=summary_language_mode,
             ) or [])
 
-            _update_video_stage(video, 'summarizing_final', 84)
-            summary_runtime_rows.extend(_upsert_all_summaries(
-                video,
-                transcript_obj,
-                summary_types=['full', 'bullet'],
-                output_language=resolved_output_language,
-                source_language=source_language,
-                summary_language_mode=summary_language_mode,
-            ) or [])
-            _rebuild_highlights(video, transcript_obj)
-            summary_seconds = max(0.0, float((timezone.now() - summary_started).total_seconds()))
+            if lite_mode:
+                logger.info(
+                    "[DEV_SYNC_LITE_MODE] video_id=%s skipping_full_summaries=%s skipping_highlights=%s skipping_chat_index=%s",
+                    str(video.id),
+                    True,
+                    True,
+                    True,
+                )
+            else:
+                _update_video_stage(video, 'summarizing_final', 84)
+                summary_runtime_rows.extend(_upsert_all_summaries(
+                    video,
+                    transcript_obj,
+                    summary_types=['full', 'bullet'],
+                    output_language=resolved_output_language,
+                    source_language=source_language,
+                    summary_language_mode=summary_language_mode,
+                ) or [])
+                _rebuild_highlights(video, transcript_obj)
 
-            _update_video_stage(video, 'indexing_chat', 94)
-            indexing_started = timezone.now()
-            index_runtime = _rebuild_chatbot_index(video, transcript_obj.json_data or {}) or index_runtime
-            indexing_seconds = max(0.0, float((timezone.now() - indexing_started).total_seconds()))
+                _update_video_stage(video, 'indexing_chat', 94)
+                indexing_started = timezone.now()
+                index_runtime = _rebuild_chatbot_index(video, transcript_obj.json_data or {}) or index_runtime
+                indexing_seconds = max(0.0, float((timezone.now() - indexing_started).total_seconds()))
+
+            summary_seconds = max(0.0, float((timezone.now() - summary_started).total_seconds()))
 
             try:
                 from .serializers import get_or_build_structured_summary
@@ -2788,6 +2838,7 @@ def _run_audio_pipeline(
         'embedding_model_fallback_used': bool(index_runtime.get('embedding_model_fallback_used', False)),
         'embedding_blocked_reason': str(index_runtime.get('embedding_blocked_reason', '') or ''),
         'embedding_runtime_error': str(index_runtime.get('embedding_runtime_error', '') or ''),
+        'dev_sync_lite_mode': bool(lite_mode),
     }
     if source_language == 'ml':
         processing_metrics['malayalam_observability'] = _build_malayalam_observability(
@@ -2927,6 +2978,18 @@ def process_video_transcription_sync(
 
         _update_video_stage(video, 'extracting_audio', 12, error_message='')
         audio_path = extract_audio(video.original_file.path)
+        try:
+            detected_duration = float(get_video_duration(audio_path) or 0.0)
+        except Exception:
+            detected_duration = 0.0
+        if detected_duration > 0:
+            video.duration = detected_duration
+            video.save(update_fields=['duration', 'updated_at'])
+        _ensure_sync_mode_duration_allowed(
+            video,
+            float(video.duration or detected_duration or 0.0),
+            source_type='upload',
+        )
         prepared_audio_path, prep_meta = _prepare_audio_for_pipeline(
             audio_path,
             transcription_language=transcription_language,
@@ -3479,6 +3542,11 @@ def process_youtube_video(
             _update_video_stage(video, 'extracting_audio', 20, error_message='')
             video.duration = get_video_duration(audio_path)
             video.save(update_fields=['duration', 'updated_at'])
+            _ensure_sync_mode_duration_allowed(
+                video,
+                float(video.duration or 0.0),
+                source_type='youtube',
+            )
 
             prepared_audio_path, prep_meta = _prepare_audio_for_pipeline(
                 audio_path,

@@ -9,4 +9,4 @@ exec gunicorn videoiq.wsgi:application \
   --bind 0.0.0.0:${PORT:-8000} \
   --workers ${WEB_CONCURRENCY:-1} \
   --threads ${GUNICORN_THREADS:-1} \
-  --timeout 300
+  --timeout ${GUNICORN_TIMEOUT:-420}

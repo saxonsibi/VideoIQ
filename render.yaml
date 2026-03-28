@@ -37,6 +37,8 @@ services:
         value: "1"
       - key: GUNICORN_THREADS
         value: "1"
+      - key: GUNICORN_TIMEOUT
+        value: "420"
 
   - type: worker
     name: videoiq-worker
@@ -70,6 +72,8 @@ services:
         value: "3.12.8"
       - key: WEB_CONCURRENCY
         value: "1"
+      - key: GUNICORN_TIMEOUT
+        value: "420"
 
 databases:
   - name: videoiq-db

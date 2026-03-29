@@ -12,6 +12,9 @@ class ChatbotConfig(AppConfig):
     verbose_name = 'Video Chatbot'
     
     def ready(self):
+        if getattr(settings, 'ON_RENDER', False):
+            return
+
         if not getattr(settings, 'RAG_PREWARM_EMBEDDING_MODEL', True):
             return
 

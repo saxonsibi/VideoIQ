@@ -4,7 +4,7 @@ services:
     runtime: docker
     plan: starter
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /
+    healthCheckPath: /healthz/
     autoDeploy: true
     envVars:
       - key: DJANGO_DEBUG

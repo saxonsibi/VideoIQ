@@ -1,6 +1,6 @@
 """URL configuration for VideoIQ AI Video Intelligence System project."""
 
-from django.http import HttpResponseRedirect
+from django.http import HttpResponseRedirect, JsonResponse
 from django.contrib import admin
 from django.urls import path, re_path, include
 from django.conf import settings
@@ -25,6 +25,10 @@ def spa_or_frontend_redirect(request):
         return HttpResponseRedirect("http://localhost:5173")
     return HttpResponseRedirect("/swagger/")
 
+
+def healthz(_request):
+    return JsonResponse({"status": "ok"})
+
 # API Documentation
 schema_view = get_schema_view(
     openapi.Info(
@@ -41,6 +45,7 @@ schema_view = get_schema_view(
 urlpatterns = [
     # Root: serve SPA build if available, else Vite dev redirect in DEBUG.
     path('', spa_or_frontend_redirect, name='root'),
+    path('healthz/', healthz, name='healthz'),
     
     # Admin
     path('admin/', admin.site.urls),

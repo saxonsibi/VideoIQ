@@ -25,6 +25,9 @@ class VideosConfig(AppConfig):
         if settings.DEBUG and os.environ.get('RUN_MAIN') not in {'true', '1'}:
             return
 
+        if getattr(settings, 'ON_RENDER', False):
+            return
+
         if getattr(settings, 'DEV_SYNC_MODE', False) and getattr(settings, 'DEV_SYNC_RECOVERY_ENABLED', False):
             self._start_sync_recovery_thread()
 

@@ -381,6 +381,9 @@ ASR_MALAYALAM_FINAL_MAX_LOW_TRUST_SEGMENT_SHARE = float(os.environ.get('ASR_MALA
 
 
 def validate_malayalam_settings():
+    if ON_RENDER:
+        return
+
     active_settings = globals().get('settings', None)
     configured_purity = float(
         getattr(active_settings, 'ASR_MALAYALAM_MIN_SCRIPT_PURITY', ASR_MALAYALAM_MIN_SCRIPT_PURITY)

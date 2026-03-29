@@ -53,7 +53,10 @@ def _sync_mode_max_video_seconds() -> float:
 def _sync_mode_lite_enabled() -> bool:
     return bool(
         getattr(settings, 'DEV_SYNC_MODE', False)
-        and getattr(settings, 'DEV_SYNC_LITE_MODE', False)
+        and (
+            getattr(settings, 'DEV_SYNC_LITE_MODE', False)
+            or getattr(settings, 'RENDER_LIGHT_MODE', False)
+        )
     )
 
 
@@ -2702,7 +2705,14 @@ def _run_audio_pipeline(
     try:
         _update_video_stage(video, 'transcript_ready', 65)
         summary_started = timezone.now()
-        if pending_malayalam_final_state:
+        if getattr(settings, 'RENDER_TRANSCRIPT_ONLY_MODE', False):
+            logger.warning(
+                "[RENDER_TRANSCRIPT_ONLY_MODE] video_id=%s transcript_id=%s skipping_summary_highlights_indexing=true",
+                getattr(video, 'id', ''),
+                getattr(transcript_obj, 'id', ''),
+            )
+            summary_seconds = max(0.0, float((timezone.now() - summary_started).total_seconds()))
+        elif pending_malayalam_final_state:
             logger.info(
                 "[ML_SUMMARY_DEFERRED_PENDING_FINAL_STATE] video_id=%s transcript_id=%s transcript_state=%s",
                 getattr(video, 'id', ''),

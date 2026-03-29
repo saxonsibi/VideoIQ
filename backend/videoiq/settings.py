@@ -35,6 +35,10 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-dev-key-change
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DJANGO_DEBUG', 'True').lower() in ('true', '1', 'yes')
+ON_RENDER = any(
+    str(os.environ.get(name, '') or '').strip()
+    for name in ('RENDER', 'RENDER_SERVICE_ID', 'RENDER_EXTERNAL_URL')
+)
 
 _allowed_hosts = os.environ.get('DJANGO_ALLOWED_HOSTS', '*')
 ALLOWED_HOSTS = [host.strip() for host in _allowed_hosts.split(',') if host.strip()] or ['*']
@@ -214,6 +218,14 @@ DEV_SYNC_MAX_VIDEO_SECONDS = int(os.environ.get('DEV_SYNC_MAX_VIDEO_SECONDS', '4
 DEV_SYNC_LITE_MODE = os.environ.get(
     'DEV_SYNC_LITE_MODE',
     'True' if DEV_SYNC_MODE else 'False'
+).lower() in ('true', '1', 'yes')
+RENDER_LIGHT_MODE = os.environ.get(
+    'RENDER_LIGHT_MODE',
+    'True' if ON_RENDER and DEV_SYNC_MODE else 'False'
+).lower() in ('true', '1', 'yes')
+RENDER_TRANSCRIPT_ONLY_MODE = os.environ.get(
+    'RENDER_TRANSCRIPT_ONLY_MODE',
+    'True' if RENDER_LIGHT_MODE else 'False'
 ).lower() in ('true', '1', 'yes')
 
 # File Upload Settings
@@ -535,7 +547,10 @@ ENTITY_LOW_CONFIDENCE_THRESHOLD = float(os.environ.get('ENTITY_LOW_CONFIDENCE_TH
 ENTITY_FUZZY_THRESHOLD = float(os.environ.get('ENTITY_FUZZY_THRESHOLD', '0.85'))
 ENTITY_MIN_TOKEN_LEN = int(os.environ.get('ENTITY_MIN_TOKEN_LEN', '4'))
 ENTITY_REPLACEMENT_LOG_LIMIT = int(os.environ.get('ENTITY_REPLACEMENT_LOG_LIMIT', '30'))
-TRANSCRIPT_QA_LOGGING = os.environ.get('TRANSCRIPT_QA_LOGGING', 'True').lower() in ('true', '1', 'yes')
+TRANSCRIPT_QA_LOGGING = os.environ.get(
+    'TRANSCRIPT_QA_LOGGING',
+    'False' if RENDER_LIGHT_MODE else 'True'
+).lower() in ('true', '1', 'yes')
 TRANSCRIPT_QA_LONG_SENTENCE_WARN = int(os.environ.get('TRANSCRIPT_QA_LONG_SENTENCE_WARN', '8'))
 TRANSCRIPT_PHRASE_BLACKLIST = os.environ.get(
     'TRANSCRIPT_PHRASE_BLACKLIST',
@@ -566,6 +581,8 @@ GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
 OLLAMA_BASE_URL = os.environ.get('OLLAMA_BASE_URL', 'http://localhost:11434')
 
 # Logging Configuration
+_APP_LOG_LEVEL = 'WARNING' if RENDER_LIGHT_MODE else 'DEBUG'
+_ROOT_LOG_LEVEL = 'WARNING' if RENDER_LIGHT_MODE else 'INFO'
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -596,22 +613,22 @@ LOGGING = {
     },
     'root': {
         'handlers': ['console'],
-        'level': 'INFO',
+        'level': _ROOT_LOG_LEVEL,
     },
     'loggers': {
         'videos': {
             'handlers': ['console'],
-            'level': 'DEBUG',
+            'level': _APP_LOG_LEVEL,
             'propagate': False,
         },
         'chatbot': {
             'handlers': ['console'],
-            'level': 'DEBUG',
+            'level': _APP_LOG_LEVEL,
             'propagate': False,
         },
         'summarizer': {
             'handlers': ['console'],
-            'level': 'DEBUG',
+            'level': _APP_LOG_LEVEL,
             'propagate': False,
         },
         'sentence_transformers': {

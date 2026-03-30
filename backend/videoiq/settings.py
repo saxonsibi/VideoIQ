@@ -296,6 +296,17 @@ RENDER_TRANSCRIPT_ONLY_MODE = os.environ.get(
     'RENDER_TRANSCRIPT_ONLY_MODE',
     'True' if RENDER_LIGHT_MODE else 'False'
 ).lower() in ('true', '1', 'yes')
+RENDER_DEMO_SAFE_ASR_MODE = os.environ.get(
+    'RENDER_DEMO_SAFE_ASR_MODE',
+    'True' if ON_RENDER and DEV_SYNC_MODE else 'False'
+).lower() in ('true', '1', 'yes')
+RENDER_DEMO_SAFE_ASR_MAX_RETRIES = int(os.environ.get('RENDER_DEMO_SAFE_ASR_MAX_RETRIES', '1'))
+RENDER_DEMO_SAFE_MAX_VIDEO_SECONDS = int(
+    os.environ.get(
+        'RENDER_DEMO_SAFE_MAX_VIDEO_SECONDS',
+        os.environ.get('DEV_SYNC_MAX_VIDEO_SECONDS', '300'),
+    )
+)
 
 # File Upload Settings
 DATA_UPLOAD_MAX_MEMORY_SIZE = 500 * 1024 * 1024  # 500MB

@@ -154,6 +154,8 @@ def _cleanup_local_staged_video(temp_dir: str, *, video_id: str, purpose: str) -
 
 def _sync_mode_max_video_seconds() -> float:
     try:
+        if bool(getattr(settings, 'RENDER_DEMO_SAFE_ASR_MODE', False)):
+            return max(0.0, float(getattr(settings, 'RENDER_DEMO_SAFE_MAX_VIDEO_SECONDS', 300) or 0.0))
         return max(0.0, float(getattr(settings, 'DEV_SYNC_MAX_VIDEO_SECONDS', 480) or 0.0))
     except Exception:
         return 480.0

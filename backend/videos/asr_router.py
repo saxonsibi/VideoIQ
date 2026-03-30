@@ -32,7 +32,13 @@ _GROQ_FALLBACK_BLOCK_UNTIL = 0.0
 _ASR_PROVIDER_PRIOR_CACHE: Dict[tuple[str, str], Dict[str, float]] = {}
 
 
+def _render_demo_safe_asr_mode() -> bool:
+    return bool(getattr(settings, "RENDER_DEMO_SAFE_ASR_MODE", False))
+
+
 def _asr_max_retries() -> int:
+    if _render_demo_safe_asr_mode():
+        return max(1, int(getattr(settings, "RENDER_DEMO_SAFE_ASR_MAX_RETRIES", 1)))
     return max(1, int(getattr(settings, "ASR_MAX_RETRIES", 3)))
 
 
@@ -455,6 +461,99 @@ def _deepgram_available() -> bool:
 
 def _is_malayalam(lang: str) -> bool:
     return normalize_language_code(lang, default="", allow_auto=False) == "ml"
+
+
+def _render_demo_safe_transcription_error(language: str, reason: str = "") -> RuntimeError:
+    normalized_lang = normalize_language_code(language, default="auto", allow_auto=True)
+    if normalized_lang == "ml":
+        detail = "Malayalam transcription is disabled on the live demo because it requires heavier local ASR."
+    elif normalized_lang not in {"auto", "en"} and normalized_lang not in _deepgram_supported_languages():
+        detail = (
+            f"Language '{normalized_lang}' is not supported on the current live demo host. "
+            "Please try English or a shorter supported clip."
+        )
+    else:
+        detail = (
+            "Live demo transcription is temporarily limited on this host. "
+            "Please try a shorter video or use the local/full deployment for heavier transcription."
+        )
+    if reason:
+        detail = f"{detail} ({reason})"
+    return RuntimeError(detail)
+
+
+def _choose_demo_safe_engine(
+    requested_lang: str,
+    chosen_lang: str,
+    duration_seconds: float,
+    file_size_bytes: int,
+    detection_confidence: float,
+) -> Dict[str, object]:
+    lang = normalize_language_code(chosen_lang, default="auto", allow_auto=True)
+    if requested_lang != "auto":
+        lang = normalize_language_code(requested_lang, default=lang, allow_auto=False)
+
+    has_groq = bool(getattr(settings, "USE_GROQ_WHISPER", True)) and bool(getattr(settings, "GROQ_API_KEY", ""))
+    has_deepgram = _deepgram_available()
+    deepgram_supported = _deepgram_supported_languages()
+    latency_budget_seconds = float(getattr(settings, "ASR_LATENCY_BUDGET_SECONDS", 480))
+
+    if not has_groq and not has_deepgram:
+        raise _render_demo_safe_transcription_error(lang, reason="no_remote_asr_provider_configured")
+
+    if lang == "ml":
+        raise _render_demo_safe_transcription_error(lang, reason="render_demo_safe_remote_only")
+
+    if lang == "auto":
+        if has_deepgram:
+            engine = "deepgram"
+            reason = "render_demo_safe_auto_remote"
+        else:
+            engine = "groq_whisper"
+            reason = "render_demo_safe_auto_groq"
+    elif lang == "en":
+        if has_groq:
+            engine = "groq_whisper"
+            reason = "render_demo_safe_english_groq"
+        elif has_deepgram:
+            engine = "deepgram"
+            reason = "render_demo_safe_english_deepgram"
+        else:
+            raise _render_demo_safe_transcription_error(lang)
+    elif lang in deepgram_supported and has_deepgram:
+        engine = "deepgram"
+        reason = "render_demo_safe_supported_deepgram"
+    else:
+        raise _render_demo_safe_transcription_error(lang, reason="unsupported_language_remote_only")
+
+    fallback_chain: List[str] = []
+    if engine == "deepgram" and has_groq:
+        fallback_chain.append("groq_whisper")
+    elif engine == "groq_whisper" and has_deepgram:
+        fallback_chain.append("deepgram")
+
+    scoring_lang = lang if lang != "auto" else "en"
+    return {
+        "engine": engine,
+        "model": _selected_model_for_engine(engine, scoring_lang),
+        "reason": reason,
+        "fallback_chain": fallback_chain,
+        "latency_budget_seconds": latency_budget_seconds,
+        "detection_confidence": round(float(detection_confidence or 0.0), 4),
+        "file_size_bytes": int(file_size_bytes or 0),
+        "score": round(
+            _candidate_score(
+                engine=engine,
+                language=scoring_lang,
+                duration_seconds=duration_seconds,
+                file_size_bytes=file_size_bytes,
+                detection_confidence=detection_confidence,
+                latency_budget_seconds=latency_budget_seconds,
+            ),
+            4,
+        ),
+        "render_demo_safe_remote_only": True,
+    }
 
 
 def _run_malayalam_local_model(audio_path: str, source_type: str, model_name: str) -> Dict:
@@ -1190,21 +1289,36 @@ def _transcribe_video_router_single(
         terminal_malayalam_failure_reason = ""
 
         # Resolve language first for routing.
-        if req_lang == "auto":
-            detected, detection_confidence = _detect_lang_for_router_with_confidence(preprocessed_path)
-            chosen_lang = normalize_language_code(detected, default="auto", allow_auto=True)
+        if _render_demo_safe_asr_mode():
+            if req_lang != "auto":
+                chosen_lang = normalize_language_code(req_lang, default="en", allow_auto=False)
+                detection_confidence = 1.0
+            else:
+                chosen_lang = "auto"
+                detection_confidence = 0.0
+            route_decision = _choose_demo_safe_engine(
+                requested_lang=req_lang,
+                chosen_lang=chosen_lang,
+                duration_seconds=route_duration,
+                file_size_bytes=file_size_bytes,
+                detection_confidence=detection_confidence,
+            )
         else:
-            chosen_lang = normalize_language_code(req_lang, default="en", allow_auto=False)
-            detection_confidence = 1.0
+            if req_lang == "auto":
+                detected, detection_confidence = _detect_lang_for_router_with_confidence(preprocessed_path)
+                chosen_lang = normalize_language_code(detected, default="auto", allow_auto=True)
+            else:
+                chosen_lang = normalize_language_code(req_lang, default="en", allow_auto=False)
+                detection_confidence = 1.0
 
-        route_decision = _choose_primary_engine(
-            requested_lang=req_lang,
-            chosen_lang=chosen_lang,
-            duration_seconds=route_duration,
-            deepgram_supported=dg_supported,
-            file_size_bytes=file_size_bytes,
-            detection_confidence=detection_confidence,
-        )
+            route_decision = _choose_primary_engine(
+                requested_lang=req_lang,
+                chosen_lang=chosen_lang,
+                duration_seconds=route_duration,
+                deepgram_supported=dg_supported,
+                file_size_bytes=file_size_bytes,
+                detection_confidence=detection_confidence,
+            )
         primary_engine = str(route_decision.get("engine", "whisper_local"))
         route_reason = str(route_decision.get("reason", ""))
         deepgram_supported_lang = chosen_lang in dg_supported
@@ -1272,91 +1386,136 @@ def _transcribe_video_router_single(
                 route_reason,
                 primary_err,
             )
-            if _is_malayalam(chosen_lang) and _is_cuda_oom_error(primary_err):
-                logger.warning(
-                    "[ML_FAST_FAIL] skipping_groq_fallback reason=malayalam_local_only_after_oom"
-                )
-                raise
-            # Local fallback first.
-            fallback_lang = "auto" if chosen_lang == "auto" else chosen_lang
-            if primary_engine != "whisper_local" or (
-                primary_engine == "whisper_local"
-                and fallback_lang == "ml"
-                and str(route_decision.get("malayalam_primary_model_override", "") or "")
-                and not speed_optimized_for_longform
-            ):
-                try:
-                    if fallback_lang == "ml":
-                        payload = _transcribe_with_malayalam_local(preprocessed_path, source_type)
-                    else:
-                        payload = _transcribe_with_local_whisper(preprocessed_path, source_type, fallback_lang)
-                    engine = "whisper_local"
-                    fallback_triggered = True
-                    fallback_reason = str(primary_err)
-                    route_reason = "deepgram_fallback_to_local" if primary_engine == "deepgram" else f"{route_reason}|fallback_local"
-                    if fallback_lang == "ml":
-                        logger.info("[ML_ASR_FALLBACK_RESULT] engine=%s model=%s reason=%s", engine, "large-v3", fallback_reason or "")
-                except Exception as local_err:
-                    if fallback_lang == "ml":
-                        terminal_malayalam_failure_reason = str(local_err)
-                    logger.warning("Local Whisper fallback failed: %s", local_err)
-            elif payload is None and fallback_lang == "ml" and speed_optimized_for_longform:
-                logger.info(
-                    "[ML_ROUTE] local_fallback_skipped=true reason=longform_fast_path_disallows_heavy_local_fallback"
-                )
-            # Deepgram fallback (non-English only, if enabled/supported).
-            if (
-                payload is None
-                and fallback_lang != "ml"
-                and _deepgram_available()
-                and fallback_lang != "en"
-                and fallback_lang in dg_supported
-            ):
-                try:
-                    if fallback_lang == "ml":
-                        logger.info(
-                            "[ML_ROUTE] experimental_deepgram_enabled=%s selected=%s skip_reason=%s",
-                            bool(getattr(settings, "ASR_ENABLE_DEEPGRAM_MALAYALAM_EXPERIMENT", False)),
-                            True,
-                            "fallback_to_deepgram",
+            if _render_demo_safe_asr_mode():
+                fallback_lang = "en" if chosen_lang == "auto" else chosen_lang
+                if primary_engine == "deepgram" and bool(getattr(settings, "USE_GROQ_WHISPER", True)) and bool(getattr(settings, "GROQ_API_KEY", "")):
+                    try:
+                        payload = _transcribe_with_groq_whisper(preprocessed_path, source_type, fallback_lang)
+                        engine = "groq_whisper"
+                        fallback_triggered = True
+                        fallback_reason = str(primary_err)
+                        route_reason = f"{route_reason}|fallback_groq"
+                    except Exception as groq_err:
+                        if _is_rate_limit_error(groq_err):
+                            _block_groq_fallback_due_to_rate_limit()
+                        logger.warning("Render demo-safe Groq fallback failed: %s", groq_err)
+                        raise _render_demo_safe_transcription_error(
+                            fallback_lang,
+                            reason=f"primary={primary_engine};fallback=groq_whisper",
+                        ) from groq_err
+                elif primary_engine == "groq_whisper" and _deepgram_available():
+                    try:
+                        payload = _call_deepgram_with_retries(
+                            preprocessed_path,
+                            language=(None if req_lang == "auto" else fallback_lang),
+                            detect_language=(req_lang == "auto"),
                         )
-                    payload = _call_deepgram_with_retries(
-                        preprocessed_path,
-                        language=fallback_lang,
-                        detect_language=False,
+                        engine = "deepgram"
+                        fallback_triggered = True
+                        fallback_reason = str(primary_err)
+                        route_reason = f"{route_reason}|fallback_deepgram"
+                    except Exception as dg_err:
+                        logger.warning("Render demo-safe Deepgram fallback failed: %s", dg_err)
+                        raise _render_demo_safe_transcription_error(
+                            fallback_lang,
+                            reason=f"primary={primary_engine};fallback=deepgram",
+                        ) from dg_err
+                else:
+                    raise _render_demo_safe_transcription_error(
+                        fallback_lang,
+                        reason=f"primary={primary_engine}",
+                    ) from primary_err
+                if payload is None:
+                    raise _render_demo_safe_transcription_error(
+                        fallback_lang,
+                        reason=f"primary={primary_engine};no_remote_fallback",
+                    ) from primary_err
+            else:
+                if _is_malayalam(chosen_lang) and _is_cuda_oom_error(primary_err):
+                    logger.warning(
+                        "[ML_FAST_FAIL] skipping_groq_fallback reason=malayalam_local_only_after_oom"
                     )
-                    engine = "deepgram"
-                    fallback_triggered = True
-                    fallback_reason = str(primary_err)
-                    route_reason = f"{route_reason}|fallback_deepgram"
-                except Exception as deepgram_err:
-                    if fallback_lang == "ml":
-                        logger.info(
-                            "[ML_ROUTE] experimental_deepgram_enabled=%s selected=%s skip_reason=%s",
-                            bool(getattr(settings, "ASR_ENABLE_DEEPGRAM_MALAYALAM_EXPERIMENT", False)),
-                            False,
-                            f"deepgram_error:{type(deepgram_err).__name__}",
+                    raise
+                # Local fallback first.
+                fallback_lang = "auto" if chosen_lang == "auto" else chosen_lang
+                if primary_engine != "whisper_local" or (
+                    primary_engine == "whisper_local"
+                    and fallback_lang == "ml"
+                    and str(route_decision.get("malayalam_primary_model_override", "") or "")
+                    and not speed_optimized_for_longform
+                ):
+                    try:
+                        if fallback_lang == "ml":
+                            payload = _transcribe_with_malayalam_local(preprocessed_path, source_type)
+                        else:
+                            payload = _transcribe_with_local_whisper(preprocessed_path, source_type, fallback_lang)
+                        engine = "whisper_local"
+                        fallback_triggered = True
+                        fallback_reason = str(primary_err)
+                        route_reason = "deepgram_fallback_to_local" if primary_engine == "deepgram" else f"{route_reason}|fallback_local"
+                        if fallback_lang == "ml":
+                            logger.info("[ML_ASR_FALLBACK_RESULT] engine=%s model=%s reason=%s", engine, "large-v3", fallback_reason or "")
+                    except Exception as local_err:
+                        if fallback_lang == "ml":
+                            terminal_malayalam_failure_reason = str(local_err)
+                        logger.warning("Local Whisper fallback failed: %s", local_err)
+                elif payload is None and fallback_lang == "ml" and speed_optimized_for_longform:
+                    logger.info(
+                        "[ML_ROUTE] local_fallback_skipped=true reason=longform_fast_path_disallows_heavy_local_fallback"
+                    )
+                # Deepgram fallback (non-English only, if enabled/supported).
+                if (
+                    payload is None
+                    and fallback_lang != "ml"
+                    and _deepgram_available()
+                    and fallback_lang != "en"
+                    and fallback_lang in dg_supported
+                ):
+                    try:
+                        if fallback_lang == "ml":
+                            logger.info(
+                                "[ML_ROUTE] experimental_deepgram_enabled=%s selected=%s skip_reason=%s",
+                                bool(getattr(settings, "ASR_ENABLE_DEEPGRAM_MALAYALAM_EXPERIMENT", False)),
+                                True,
+                                "fallback_to_deepgram",
+                            )
+                        payload = _call_deepgram_with_retries(
+                            preprocessed_path,
+                            language=fallback_lang,
+                            detect_language=False,
                         )
-                    logger.warning("Deepgram fallback failed: %s", deepgram_err)
-            # Groq fallback last for non-Malayalam only. Malayalam must stay local-first;
-            # Groq is not allowed to become the persisted final transcript path.
-            if payload is None and fallback_lang == "ml":
-                logger.info(
-                    "[ML_ROUTE] groq_fallback_skipped=true reason=malayalam_local_only_final_path"
-                )
-            if payload is None and fallback_lang != "ml" and primary_engine != "groq_whisper" and _asr_use_groq_fallback():
-                try:
-                    payload = _transcribe_with_groq_whisper(preprocessed_path, source_type, fallback_lang)
-                    engine = "groq_whisper"
-                    fallback_triggered = True
-                    fallback_reason = str(primary_err)
-                    route_reason = f"{route_reason}|fallback_groq"
-                    if fallback_lang == "ml":
-                        logger.info("[ML_ASR_FALLBACK_RESULT] engine=%s model=%s reason=%s", engine, "whisper-large-v3", fallback_reason or "")
-                except Exception as groq_err:
-                    if _is_rate_limit_error(groq_err):
-                        _block_groq_fallback_due_to_rate_limit()
-                    logger.warning("Groq fallback failed: %s", groq_err)
+                        engine = "deepgram"
+                        fallback_triggered = True
+                        fallback_reason = str(primary_err)
+                        route_reason = f"{route_reason}|fallback_deepgram"
+                    except Exception as deepgram_err:
+                        if fallback_lang == "ml":
+                            logger.info(
+                                "[ML_ROUTE] experimental_deepgram_enabled=%s selected=%s skip_reason=%s",
+                                bool(getattr(settings, "ASR_ENABLE_DEEPGRAM_MALAYALAM_EXPERIMENT", False)),
+                                False,
+                                f"deepgram_error:{type(deepgram_err).__name__}",
+                            )
+                        logger.warning("Deepgram fallback failed: %s", deepgram_err)
+                # Groq fallback last for non-Malayalam only. Malayalam must stay local-first;
+                # Groq is not allowed to become the persisted final transcript path.
+                if payload is None and fallback_lang == "ml":
+                    logger.info(
+                        "[ML_ROUTE] groq_fallback_skipped=true reason=malayalam_local_only_final_path"
+                    )
+                if payload is None and fallback_lang != "ml" and primary_engine != "groq_whisper" and _asr_use_groq_fallback():
+                    try:
+                        payload = _transcribe_with_groq_whisper(preprocessed_path, source_type, fallback_lang)
+                        engine = "groq_whisper"
+                        fallback_triggered = True
+                        fallback_reason = str(primary_err)
+                        route_reason = f"{route_reason}|fallback_groq"
+                        if fallback_lang == "ml":
+                            logger.info("[ML_ASR_FALLBACK_RESULT] engine=%s model=%s reason=%s", engine, "whisper-large-v3", fallback_reason or "")
+                    except Exception as groq_err:
+                        if _is_rate_limit_error(groq_err):
+                            _block_groq_fallback_due_to_rate_limit()
+                        logger.warning("Groq fallback failed: %s", groq_err)
 
         if isinstance(payload, dict):
             chosen_lang = normalize_language_code(
@@ -1778,6 +1937,12 @@ def _transcribe_video_router_single(
                         _block_groq_fallback_due_to_rate_limit()
                     logger.warning("Groq Whisper secondary fallback failed: %s", e)
             if fallback_payload is None:
+                if _render_demo_safe_asr_mode():
+                    quality_gate_passed = False
+                    raise _render_demo_safe_transcription_error(
+                        fallback_lang,
+                        reason="deepgram_low_content_remote_only",
+                    )
                 fallback_payload = _transcribe_with_local_whisper(preprocessed_path, source_type, fallback_lang)
                 engine = "whisper_local"
                 route_reason = "deepgram_fallback_to_local"
@@ -1793,6 +1958,12 @@ def _transcribe_video_router_single(
         )
         if _is_low_content_for_duration(payload.get("text", ""), duration) and not terminal_malayalam_failure:
             if engine != "whisper_local":
+                if _render_demo_safe_asr_mode():
+                    quality_gate_passed = False
+                    raise _render_demo_safe_transcription_error(
+                        normalize_language_code(payload.get("language"), default=chosen_lang, allow_auto=False),
+                        reason="final_quality_gate_low_content_remote_only",
+                    )
                 forced_lang = normalize_language_code(payload.get("language"), default=chosen_lang, allow_auto=False)
                 if forced_lang == "auto":
                     forced_lang = "en"

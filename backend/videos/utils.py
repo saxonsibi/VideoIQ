@@ -40,6 +40,10 @@ _WHISPER_MODEL_CACHE_META = {}
 _SUMMARY_PIPELINE_CACHE = {}
 _SUMMARY_PIPELINE_LOCK = threading.Lock()
 
+
+def _render_demo_safe_asr_mode() -> bool:
+    return bool(getattr(settings, 'RENDER_DEMO_SAFE_ASR_MODE', False))
+
 LANGUAGE_ALIASES = {
     'auto': 'auto',
     'english': 'en',
@@ -2961,6 +2965,8 @@ def _transcribe_with_groq(audio_path: str, source_type: str, transcription_langu
     groq_api_key = getattr(settings, 'GROQ_API_KEY', '')
     
     if not groq_api_key:
+        if _render_demo_safe_asr_mode():
+            raise RuntimeError("Live demo transcription requires a configured remote ASR provider.")
         logger.warning("Groq API key not found, falling back to Faster-Whisper")
         payload = _transcribe_with_faster_whisper(audio_path, source_type, transcription_language)
         meta = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
@@ -3037,6 +3043,8 @@ def _transcribe_with_groq(audio_path: str, source_type: str, transcription_langu
                     logger.warning(f"Forced-language Groq retry failed: {retry_err}")
 
             if _looks_garbled_multiscript(payload.get('text', '')):
+                if _render_demo_safe_asr_mode():
+                    raise RuntimeError("Live demo transcription returned low-confidence Groq output.")
                 fallback_lang = _detect_audio_language(audio_path)
                 if fallback_lang == 'auto':
                     fallback_lang = 'auto'
@@ -3054,6 +3062,8 @@ def _transcribe_with_groq(audio_path: str, source_type: str, transcription_langu
         
     except Exception as e:
         logger.error(f"Groq Whisper transcription failed: {e}")
+        if _render_demo_safe_asr_mode():
+            raise
         logger.info("Falling back to Faster-Whisper...")
         payload = _transcribe_with_faster_whisper(audio_path, source_type, transcription_language)
         meta = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}

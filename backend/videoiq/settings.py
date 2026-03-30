@@ -756,4 +756,8 @@ if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
-    SECURE_SSL_REDIRECT = os.environ.get('DJANGO_SECURE_SSL_REDIRECT', 'True').lower() in ('true', '1', 'yes')
+    _secure_ssl_redirect_default = 'False' if ON_RENDER else 'True'
+    SECURE_SSL_REDIRECT = os.environ.get(
+        'DJANGO_SECURE_SSL_REDIRECT',
+        _secure_ssl_redirect_default,
+    ).lower() in ('true', '1', 'yes')

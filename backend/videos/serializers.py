@@ -843,6 +843,29 @@ def get_or_build_structured_summary(video, transcript):
     if not transcript:
         return _build_structured_summary_from_legacy_summaries(video)
 
+    if bool(getattr(settings, 'RENDER_TRANSCRIPT_ONLY_MODE', False)):
+        json_data = transcript.json_data if isinstance(transcript.json_data, dict) else {}
+        cached = json_data.get('structured_summary_cache', {})
+        if isinstance(cached, dict) and isinstance(cached.get('payload'), dict):
+            payload = cached.get('payload')
+            if _structured_summary_has_content(payload):
+                logger.info(
+                    "[STRUCTURED_SUMMARY_CACHE] render_transcript_only_mode=cache_only video_id=%s transcript_id=%s cache_hit=True",
+                    getattr(video, "id", ""),
+                    getattr(transcript, "id", ""),
+                )
+                return _augment_structured_summary_with_english_view(payload, transcript)
+        logger.info(
+            "[STRUCTURED_SUMMARY_CACHE] render_transcript_only_mode=skip_rebuild video_id=%s transcript_id=%s",
+            getattr(video, "id", ""),
+            getattr(transcript, "id", ""),
+        )
+        return {
+            **default_structured_summary(),
+            "summary_state": "disabled_live_demo",
+            "summary_blocked_reason": "render_transcript_only_mode",
+        }
+
     json_data = transcript.json_data if isinstance(transcript.json_data, dict) else {}
     transcript_state = str(json_data.get('transcript_state', '') or '').strip().lower()
     transcript_language = str(getattr(transcript, "transcript_language", "") or getattr(transcript, "language", "") or "").strip().lower()

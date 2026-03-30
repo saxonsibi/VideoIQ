@@ -33,6 +33,36 @@ from videos.processing_metadata import build_processing_metadata
 logger = logging.getLogger(__name__)
 
 
+def _render_transcript_only_chat_disabled_response(*, session_id=None, transcript=None, video=None, output_language='en'):
+    english_view = {
+        'english_view_text': '',
+        'english_view_available': False,
+        'translation_state': 'blocked',
+        'translation_warning': '',
+        'translation_blocked_reason': 'render_transcript_only_mode',
+    }
+    payload = {
+        'answer': '',
+        'sources': [],
+        'session_id': str(session_id) if session_id else None,
+        'user_language': output_language,
+        'output_language': output_language,
+        'retrieval_language': 'en',
+        'processing_metadata': build_processing_metadata(video, transcript) if video else {},
+        'error': 'Chatbot is disabled on the live demo to keep the server responsive after transcription.',
+        'english_view_answer': '',
+        'english_view_available': False,
+        'chatbot_answer_language': output_language,
+        'chatbot_english_view_available': False,
+        'chatbot_translation_state': 'blocked',
+        'chatbot_translation_warning': '',
+        'chatbot_translation_blocked_reason': 'render_transcript_only_mode',
+        'chatbot_blocked_reason': 'render_transcript_only_mode',
+    }
+    payload.update(english_view)
+    return payload
+
+
 def _pack_chat_sources_with_english_view_cache(sources, cache_entry=None):
     payload = {
         "sources": list(sources or []),
@@ -481,6 +511,17 @@ class ChatbotView(APIView):
                         'chatbot_translation_blocked_reason': str(chat_en_view.get('translation_blocked_reason', '') or ''),
                         'chatbot_blocked_reason': 'malayalam_source_fidelity_failed' if transcript_fidelity_failed else 'transcript_quality_too_low',
                     })
+
+                if bool(getattr(settings, 'RENDER_TRANSCRIPT_ONLY_MODE', False)):
+                    return Response(
+                        _render_transcript_only_chat_disabled_response(
+                            session_id=session.id,
+                            transcript=transcript,
+                            video=video,
+                            output_language=output_language,
+                        ),
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
                 
                 # Initialize chatbot engine
                 chatbot = ChatbotEngine(str(video_id))
@@ -698,6 +739,9 @@ class ChatbotView(APIView):
                 {'error': 'video_id is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        if bool(getattr(settings, 'RENDER_TRANSCRIPT_ONLY_MODE', False)):
+            return Response({'questions': []})
         
         chatbot = ChatbotEngine(str(video_id))
         suggested_questions = chatbot.get_suggested_questions()
@@ -721,6 +765,11 @@ class VideoIndexViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['post'])
     def build(self, request):
         """Build index for a video."""
+        if bool(getattr(settings, 'RENDER_TRANSCRIPT_ONLY_MODE', False)):
+            return Response(
+                {'error': 'Chatbot index build is disabled on the live demo.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         video_id = request.data.get('video_id')
         
         if not video_id:

@@ -999,6 +999,18 @@ class ChatbotEngine:
     
     def initialize(self) -> bool:
         """Initialize the chatbot by loading or building the index."""
+        if bool(getattr(settings, 'RENDER_TRANSCRIPT_ONLY_MODE', False)):
+            self.index_blocked_reason = "render_transcript_only_mode"
+            self.rag_engine._write_index_status(
+                status_value="blocked",
+                reason="render_transcript_only_mode",
+                num_documents=0,
+            )
+            logger.info(
+                "[RAG_INDEX_SKIPPED_RENDER_TRANSCRIPT_ONLY] video_id=%s",
+                self.video_id,
+            )
+            return False
         self.index_blocked_reason = ""
         transcript = self._current_transcript_record()
         blocked_reason = self._malayalam_index_block_reason(transcript)
@@ -1163,6 +1175,18 @@ class ChatbotEngine:
 
     def build_from_transcript(self, transcript_segments: List[Dict]) -> bool:
         """Build index from transcript segments."""
+        if bool(getattr(settings, 'RENDER_TRANSCRIPT_ONLY_MODE', False)):
+            self.index_blocked_reason = "render_transcript_only_mode"
+            self.rag_engine._write_index_status(
+                status_value="blocked",
+                reason="render_transcript_only_mode",
+                num_documents=0,
+            )
+            logger.info(
+                "[RAG_BUILD_SKIPPED_RENDER_TRANSCRIPT_ONLY] video_id=%s",
+                self.video_id,
+            )
+            return False
         transcript = self._current_transcript_record()
         blocked_reason = self._malayalam_index_block_reason(transcript)
         if blocked_reason:

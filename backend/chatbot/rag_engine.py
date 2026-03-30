@@ -16,7 +16,6 @@ from datetime import datetime
 
 import numpy as np
 from django.conf import settings
-import faiss
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +25,7 @@ _EMBEDDING_MODEL_CACHE: Dict[str, Any] = {}
 _RERANKER_MODEL_CACHE: Dict[str, object] = {}
 _EMBEDDING_LOGGING_CONFIGURED = False
 _LAST_EMBEDDING_LOAD_META: Dict[str, Dict[str, object]] = {}
+_FAISS_MODULE = None
 
 STOPWORDS = {
     'the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'on', 'for', 'with', 'is', 'are',
@@ -61,6 +61,14 @@ LANGUAGE_CODE_ALIASES = {
     'arabic': 'ar',
     'russian': 'ru',
 }
+
+
+def _get_faiss():
+    global _FAISS_MODULE
+    if _FAISS_MODULE is None:
+        import faiss  # type: ignore
+        _FAISS_MODULE = faiss
+    return _FAISS_MODULE
 
 
 def _normalize_response_language(language: Optional[str], default: str = 'en') -> str:
@@ -403,6 +411,7 @@ class VideoRAGEngine:
             
             # Create FAISS index
             dimension = embeddings.shape[1]
+            faiss = _get_faiss()
             self.index = faiss.IndexFlatIP(dimension)  # Inner product = cosine similarity for normalized
             self.index.add(embeddings.astype('float32'))
             
@@ -591,6 +600,7 @@ class VideoRAGEngine:
         
         # Save FAISS index
         index_path = self.index_dir / 'index.faiss'
+        faiss = _get_faiss()
         faiss.write_index(self.index, str(index_path))
         
         # Save documents and metadata
@@ -624,6 +634,7 @@ class VideoRAGEngine:
                 return False
             
             # Load FAISS index
+            faiss = _get_faiss()
             self.index = faiss.read_index(str(index_path))
             
             # Load documents and metadata

@@ -31,6 +31,13 @@ from .processing_metadata import build_processing_metadata
 logger = logging.getLogger(__name__)
 
 
+def _storage_backend_label(field_file) -> str:
+    try:
+        return field_file.storage.__class__.__name__
+    except Exception:
+        return 'unknown'
+
+
 class TranscriptViewSet(viewsets.ModelViewSet):
     """ViewSet for managing transcripts with edit capability."""
     serializer_class = TranscriptSerializer
@@ -183,6 +190,14 @@ class VideoUploadView(views.APIView):
                 file_size=video_file.size,
                 file_format=os.path.splitext(video_file.name)[1].lower()[1:],
                 status='uploaded'
+            )
+
+            logger.warning(
+                "[UPLOAD_SAVED] video_id=%s storage_backend=%s file_name=%s file_size=%s",
+                str(video.id),
+                _storage_backend_label(video.original_file),
+                str(getattr(video.original_file, 'name', '') or ''),
+                int(video.file_size or 0),
             )
             
             _launch_manual_processing(

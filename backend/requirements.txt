@@ -5,6 +5,8 @@ django-cors-headers>=4.3.0
 dj-database-url>=2.1.0
 whitenoise>=6.6.0
 gunicorn>=22.0.0
+django-storages>=1.14.4
+boto3>=1.35.0
 
 # Database
 mysqlclient>=2.2.0

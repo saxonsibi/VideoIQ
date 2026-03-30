@@ -14,6 +14,7 @@ from celery import shared_task
 from django.conf import settings
 from django.db import transaction, IntegrityError
 from django.utils import timezone
+from django.core.files.storage import default_storage
 
 from .models import Video, Transcript, Summary, HighlightSegment, ShortVideo, ProcessingTask
 from .audio_preprocessor import chunk_on_silence_boundaries, condition_audio_for_asr, normalize_to_lufs
@@ -41,6 +42,114 @@ _VIDEO_INTERRUPTED_STATUSES = {
     'summarizing',
     'indexing_chat',
 }
+
+
+def _video_storage_backend_label(video) -> str:
+    try:
+        if video.original_file:
+            return video.original_file.storage.__class__.__name__
+    except Exception:
+        pass
+    return default_storage.__class__.__name__
+
+
+def _video_original_exists(video) -> bool:
+    if not getattr(video, 'original_file', None):
+        return False
+    try:
+        exists = bool(video.original_file.storage.exists(video.original_file.name))
+    except Exception as exc:
+        logger.warning(
+            "[VIDEO_SOURCE_CHECK] video_id=%s storage_backend=%s file_name=%s exists=unknown error=%s",
+            getattr(video, 'id', ''),
+            _video_storage_backend_label(video),
+            str(getattr(video.original_file, 'name', '') or ''),
+            exc,
+        )
+        return False
+
+    logger.warning(
+        "[VIDEO_SOURCE_CHECK] video_id=%s storage_backend=%s file_name=%s exists=%s",
+        getattr(video, 'id', ''),
+        _video_storage_backend_label(video),
+        str(getattr(video.original_file, 'name', '') or ''),
+        exists,
+    )
+    return exists
+
+
+def _stage_uploaded_video_to_local_temp(video, *, purpose: str) -> tuple[str, str]:
+    """
+    Materialize an uploaded video to a local path for ffmpeg/moviepy processing.
+    Local dev continues to use the filesystem path directly when available.
+    Production object storage downloads to /tmp on demand.
+    """
+    if not getattr(video, 'original_file', None):
+        raise FileNotFoundError("No uploaded video file is attached to this record.")
+
+    storage_backend = _video_storage_backend_label(video)
+    file_name = str(getattr(video.original_file, 'name', '') or '')
+
+    if not _video_original_exists(video):
+        raise FileNotFoundError(
+            f"Uploaded video file is unavailable in storage for {purpose}. "
+            f"backend={storage_backend} file={file_name}"
+        )
+
+    try:
+        local_path = video.original_file.path
+    except Exception:
+        local_path = ''
+
+    if local_path and os.path.exists(local_path):
+        logger.warning(
+            "[VIDEO_SOURCE_READY] video_id=%s purpose=%s storage_backend=%s mode=filesystem path=%s",
+            getattr(video, 'id', ''),
+            purpose,
+            storage_backend,
+            local_path,
+        )
+        return local_path, ''
+
+    suffix = os.path.splitext(file_name)[1] or '.mp4'
+    temp_dir = tempfile.mkdtemp(prefix=f'video_source_{purpose}_')
+    local_copy_path = os.path.join(temp_dir, f'{uuid.uuid4()}{suffix}')
+    logger.warning(
+        "[VIDEO_SOURCE_DOWNLOAD_START] video_id=%s purpose=%s storage_backend=%s file_name=%s temp_path=%s",
+        getattr(video, 'id', ''),
+        purpose,
+        storage_backend,
+        file_name,
+        local_copy_path,
+    )
+    bytes_written = 0
+    with video.original_file.open('rb') as src, open(local_copy_path, 'wb') as dst:
+        while True:
+            chunk = src.read(1024 * 1024)
+            if not chunk:
+                break
+            dst.write(chunk)
+            bytes_written += len(chunk)
+    logger.warning(
+        "[VIDEO_SOURCE_DOWNLOAD_DONE] video_id=%s purpose=%s bytes_written=%s temp_path=%s",
+        getattr(video, 'id', ''),
+        purpose,
+        bytes_written,
+        local_copy_path,
+    )
+    return local_copy_path, temp_dir
+
+
+def _cleanup_local_staged_video(temp_dir: str, *, video_id: str, purpose: str) -> None:
+    if not temp_dir:
+        return
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    logger.warning(
+        "[VIDEO_SOURCE_CLEANUP_DONE] video_id=%s purpose=%s temp_dir=%s",
+        video_id,
+        purpose,
+        temp_dir,
+    )
 
 
 def _sync_mode_max_video_seconds() -> float:
@@ -547,13 +656,7 @@ def resume_interrupted_video_processing_sync(
             summary_language_mode=summary_language_mode,
         )
 
-    original_path = ''
-    try:
-        original_path = video.original_file.path if video.original_file else ''
-    except Exception:
-        original_path = ''
-
-    if original_path and os.path.exists(original_path):
+    if _video_original_exists(video):
         logger.info("Recovering interrupted uploaded-file processing for %s", video_id)
         return process_video_transcription_sync(
             video_id,
@@ -2986,55 +3089,63 @@ def process_video_transcription_sync(
             logger.info("Skipping duplicate video processing run for %s; status=%s", video_id, video.status)
             return {'status': 'already_processing', 'message': 'Video is already being processed', 'video_id': str(video_id)}
 
-        _update_video_stage(video, 'extracting_audio', 12, error_message='')
-        audio_path = extract_audio(video.original_file.path)
         try:
-            detected_duration = float(get_video_duration(audio_path) or 0.0)
-        except Exception:
+            _update_video_stage(video, 'extracting_audio', 12, error_message='')
+            staged_video_dir = ''
+            audio_path = ''
             detected_duration = 0.0
-        if detected_duration > 0:
-            video.duration = detected_duration
-            video.save(update_fields=['duration', 'updated_at'])
-        _ensure_sync_mode_duration_allowed(
-            video,
-            float(video.duration or detected_duration or 0.0),
-            source_type='upload',
-        )
-        prepared_audio_path, prep_meta = _prepare_audio_for_pipeline(
-            audio_path,
-            transcription_language=transcription_language,
-        )
-        try:
-            result = _run_audio_pipeline(
-                video,
-                chunks=prep_meta.get('chunks', []),
-                audio_path=prepared_audio_path,
-                source_type='file',
-                transcription_language=transcription_language,
-                output_language=output_language,
-                summary_language_mode=summary_language_mode,
-            )
-        finally:
-            shutil.rmtree(prep_meta.get('temp_dir', ''), ignore_errors=True)
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
-        logger.info(f"Video processing completed for {video_id}")
-        return result
-        
+            source_video_path, staged_video_dir = _stage_uploaded_video_to_local_temp(video, purpose='transcription_sync')
+            try:
+                audio_path = extract_audio(source_video_path)
+                detected_duration = float(get_video_duration(audio_path) or 0.0)
+                if detected_duration > 0:
+                    video.duration = detected_duration
+                    video.save(update_fields=['duration', 'updated_at'])
+                _ensure_sync_mode_duration_allowed(
+                    video,
+                    float(video.duration or detected_duration or 0.0),
+                    source_type='upload',
+                )
+                prepared_audio_path, prep_meta = _prepare_audio_for_pipeline(
+                    audio_path,
+                    transcription_language=transcription_language,
+                )
+                try:
+                    result = _run_audio_pipeline(
+                        video,
+                        chunks=prep_meta.get('chunks', []),
+                        audio_path=prepared_audio_path,
+                        source_type='file',
+                        transcription_language=transcription_language,
+                        output_language=output_language,
+                        summary_language_mode=summary_language_mode,
+                    )
+                finally:
+                    shutil.rmtree(prep_meta.get('temp_dir', ''), ignore_errors=True)
+                    if audio_path and os.path.exists(audio_path):
+                        os.remove(audio_path)
+            finally:
+                _cleanup_local_staged_video(staged_video_dir, video_id=str(video_id), purpose='transcription_sync')
+            logger.info(f"Video processing completed for {video_id}")
+            return result
+            
+        except Exception as e:
+            try:
+                video = Video.objects.get(id=video_id)
+                continued = _continue_degraded_low_trust_malayalam(video, e, source='file_sync_wrapper')
+                if continued:
+                    return continued
+            except Exception:
+                pass
+            logger.error(f"Video processing failed: {str(e)}")
+            try:
+                video = Video.objects.get(id=video_id)
+                _fail_video_with_logged_status(video, e, source='file_sync_wrapper')
+            except:
+                pass
+            return {'status': 'error', 'message': str(e), 'video_id': str(video_id)}
     except Exception as e:
-        try:
-            video = Video.objects.get(id=video_id)
-            continued = _continue_degraded_low_trust_malayalam(video, e, source='file_sync_wrapper')
-            if continued:
-                return continued
-        except Exception:
-            pass
-        logger.error(f"Video processing failed: {str(e)}")
-        try:
-            video = Video.objects.get(id=video_id)
-            _fail_video_with_logged_status(video, e, source='file_sync_wrapper')
-        except:
-            pass
+        logger.error(f"Video processing failed before setup for {video_id}: {str(e)}")
         return {'status': 'error', 'message': str(e), 'video_id': str(video_id)}
 
 
@@ -3053,6 +3164,9 @@ def process_video_transcription(
     2. Transcribe audio using Whisper
     3. Update video status
     """
+    task = None
+    staged_video_dir = ''
+    audio_path = ''
     try:
         video, claimed = _claim_video_processing(video_id)
         if video is None:
@@ -3069,31 +3183,37 @@ def process_video_transcription(
             task.message = 'Extracting audio from video'
             task.save(update_fields=['status', 'progress', 'message'])
 
-        audio_path = extract_audio(video.original_file.path)
-
-        if task:
-            task.progress = 35
-            task.message = 'Running transcript, summary, and chatbot stages'
-            task.save(update_fields=['progress', 'message'])
-
-        prepared_audio_path, prep_meta = _prepare_audio_for_pipeline(
-            audio_path,
-            transcription_language=transcription_language,
-        )
+        prep_meta = None
         try:
-            result = _run_audio_pipeline(
-                video,
-                chunks=prep_meta.get('chunks', []),
-                audio_path=prepared_audio_path,
-                source_type='file',
+            source_video_path, staged_video_dir = _stage_uploaded_video_to_local_temp(video, purpose='transcription_async')
+            audio_path = extract_audio(source_video_path)
+
+            if task:
+                task.progress = 35
+                task.message = 'Running transcript, summary, and chatbot stages'
+                task.save(update_fields=['progress', 'message'])
+
+            prepared_audio_path, prep_meta = _prepare_audio_for_pipeline(
+                audio_path,
                 transcription_language=transcription_language,
-                output_language=output_language,
-                summary_language_mode=summary_language_mode,
             )
+            try:
+                result = _run_audio_pipeline(
+                    video,
+                    chunks=prep_meta.get('chunks', []),
+                    audio_path=prepared_audio_path,
+                    source_type='file',
+                    transcription_language=transcription_language,
+                    output_language=output_language,
+                    summary_language_mode=summary_language_mode,
+                )
+            finally:
+                if prep_meta:
+                    shutil.rmtree(prep_meta.get('temp_dir', ''), ignore_errors=True)
+                if audio_path and os.path.exists(audio_path):
+                    os.remove(audio_path)
         finally:
-            shutil.rmtree(prep_meta.get('temp_dir', ''), ignore_errors=True)
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
+            _cleanup_local_staged_video(staged_video_dir, video_id=str(video_id), purpose='transcription_async')
 
         if task:
             if result.get('status') == 'success':
@@ -3339,13 +3459,17 @@ def generate_short_video(
             task.save(update_fields=['progress', 'message'])
         
         # Create short video
-        short_video_path = create_short_video(
-            video.original_file.path,
-            selected_segments,
-            style=style,
-            caption_style=caption_style,
-            font_size=font_size
-        )
+        source_video_path, staged_video_dir = _stage_uploaded_video_to_local_temp(video, purpose='short_video')
+        try:
+            short_video_path = create_short_video(
+                source_video_path,
+                selected_segments,
+                style=style,
+                caption_style=caption_style,
+                font_size=font_size
+            )
+        finally:
+            _cleanup_local_staged_video(staged_video_dir, video_id=str(video_id), purpose='short_video')
         
         if task:
             task.progress = 80

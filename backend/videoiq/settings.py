@@ -26,6 +26,15 @@ def _env_bool(name: str, default: str = 'False', *, prefer_dotenv: bool = False)
         raw = os.environ.get(name, default)
     return str(raw).strip().lower() in ('true', '1', 'yes', 'on')
 
+
+def _require_env(name: str) -> str:
+    value = str(os.environ.get(name, '') or '').strip()
+    if not value:
+        raise ImproperlyConfigured(
+            f"{name} must be set when USE_S3_MEDIA_STORAGE=True."
+        )
+    return value
+
 # Create logs directory if it doesn't exist
 LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -67,6 +76,14 @@ INSTALLED_APPS = [
     'chatbot',
     'summarizer',
 ]
+
+USE_S3_MEDIA_STORAGE = os.environ.get(
+    'USE_S3_MEDIA_STORAGE',
+    'True' if ON_RENDER else 'False'
+).lower() in ('true', '1', 'yes')
+
+if USE_S3_MEDIA_STORAGE:
+    INSTALLED_APPS.append('storages')
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
@@ -157,11 +174,63 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_DIRS = [FRONTEND_DIST_DIR]
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # Media files (Videos, audio, etc.)
-MEDIA_URL = 'media/'
+MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+if USE_S3_MEDIA_STORAGE:
+    AWS_ACCESS_KEY_ID = _require_env('AWS_ACCESS_KEY_ID')
+    AWS_SECRET_ACCESS_KEY = _require_env('AWS_SECRET_ACCESS_KEY')
+    AWS_STORAGE_BUCKET_NAME = _require_env('AWS_STORAGE_BUCKET_NAME')
+    AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', '').strip()
+    AWS_S3_ENDPOINT_URL = os.environ.get('AWS_S3_ENDPOINT_URL', '').strip()
+    AWS_S3_CUSTOM_DOMAIN = os.environ.get('AWS_S3_CUSTOM_DOMAIN', '').strip()
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = os.environ.get('AWS_QUERYSTRING_AUTH', 'False').lower() in ('true', '1', 'yes')
+    AWS_S3_FILE_OVERWRITE = os.environ.get('AWS_S3_FILE_OVERWRITE', 'False').lower() in ('true', '1', 'yes')
+    AWS_LOCATION = os.environ.get('AWS_LOCATION', '').strip()
+
+    STORAGES = {
+        'default': {
+            'BACKEND': 'storages.backends.s3.S3Storage',
+            'OPTIONS': {
+                'access_key': AWS_ACCESS_KEY_ID,
+                'secret_key': AWS_SECRET_ACCESS_KEY,
+                'bucket_name': AWS_STORAGE_BUCKET_NAME,
+                'region_name': AWS_S3_REGION_NAME or None,
+                'endpoint_url': AWS_S3_ENDPOINT_URL or None,
+                'custom_domain': AWS_S3_CUSTOM_DOMAIN or None,
+                'default_acl': AWS_DEFAULT_ACL,
+                'querystring_auth': AWS_QUERYSTRING_AUTH,
+                'file_overwrite': AWS_S3_FILE_OVERWRITE,
+                'location': AWS_LOCATION,
+            },
+        },
+        'staticfiles': {
+            'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+        },
+    }
+
+    if AWS_S3_CUSTOM_DOMAIN:
+        MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/"
+    elif AWS_STORAGE_BUCKET_NAME and AWS_S3_ENDPOINT_URL:
+        cleaned_endpoint = AWS_S3_ENDPOINT_URL.rstrip('/')
+        media_prefix = f"/{AWS_LOCATION.strip('/')}" if AWS_LOCATION.strip('/') else ''
+        MEDIA_URL = f"{cleaned_endpoint}/{AWS_STORAGE_BUCKET_NAME}{media_prefix}/"
+else:
+    STORAGES = {
+        'default': {
+            'BACKEND': 'django.core.files.storage.FileSystemStorage',
+            'OPTIONS': {
+                'location': MEDIA_ROOT,
+                'base_url': f'/{MEDIA_URL.strip("/")}/',
+            },
+        },
+        'staticfiles': {
+            'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+        },
+    }
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

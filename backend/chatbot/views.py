@@ -63,6 +63,16 @@ def _render_transcript_only_chat_disabled_response(*, session_id=None, transcrip
     return payload
 
 
+def _render_safe_suggested_questions() -> list[str]:
+    return [
+        "What is this video about?",
+        "Give me a short summary.",
+        "What are the key takeaways?",
+        "What are the main topics discussed?",
+        "What should I remember from this video?",
+    ]
+
+
 def _pack_chat_sources_with_english_view_cache(sources, cache_entry=None):
     payload = {
         "sources": list(sources or []),
@@ -805,6 +815,8 @@ class ChatbotView(APIView):
             )
 
         if bool(getattr(settings, 'RENDER_TRANSCRIPT_ONLY_MODE', False)):
+            if bool(getattr(settings, 'RENDER_SAFE_CHATBOT_MODE', False)):
+                return Response({'questions': _render_safe_suggested_questions()})
             return Response({'questions': []})
         
         chatbot = ChatbotEngine(str(video_id))

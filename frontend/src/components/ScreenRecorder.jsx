@@ -1,7 +1,25 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { EyeIcon, EyeSlashIcon } from '@heroicons/react/24/outline'
 import { videoAPI } from '../services/api'
-import VideoPlayer from './VideoPlayer'
+
+const getPreferredRecordingMimeType = () => {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+    return ''
+  }
+
+  const candidates = [
+    'video/webm;codecs=vp8,opus',
+    'video/webm;codecs=vp9,opus',
+    'video/webm',
+  ]
+  return candidates.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) || ''
+}
+
+const getRecordingExtension = (mimeType) => {
+  const normalized = String(mimeType || '').toLowerCase()
+  if (normalized.includes('mp4')) return 'mp4'
+  return 'webm'
+}
 
 const ScreenRecorder = ({ onVideoRecorded }) => {
   const [isRecording, setIsRecording] = useState(false);
@@ -12,6 +30,7 @@ const ScreenRecorder = ({ onVideoRecorded }) => {
   const [hasActivePreview, setHasActivePreview] = useState(false)
   const [recordedBlob, setRecordedBlob] = useState(null)
   const [recordedPreviewUrl, setRecordedPreviewUrl] = useState(null)
+  const [recordedMimeType, setRecordedMimeType] = useState('video/webm')
   
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -59,6 +78,7 @@ const ScreenRecorder = ({ onVideoRecorded }) => {
       }
       setRecordedBlob(null)
       setRecordedPreviewUrl(null)
+      setRecordedMimeType('video/webm')
       
       const stream = await getScreenCaptureStream()
 
@@ -71,9 +91,10 @@ const ScreenRecorder = ({ onVideoRecorded }) => {
       }
 
       // Create MediaRecorder
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp9'
-      });
+      const preferredMimeType = getPreferredRecordingMimeType()
+      const mediaRecorder = preferredMimeType
+        ? new MediaRecorder(stream, { mimeType: preferredMimeType })
+        : new MediaRecorder(stream);
 
       mediaRecorderRef.current = mediaRecorder;
 
@@ -97,8 +118,10 @@ const ScreenRecorder = ({ onVideoRecorded }) => {
         }
         
         // Create video blob
-        const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+        const finalMimeType = mediaRecorder.mimeType || preferredMimeType || 'video/webm'
+        const blob = new Blob(chunksRef.current, { type: finalMimeType });
         setRecordedBlob(blob)
+        setRecordedMimeType(finalMimeType)
         setRecordedPreviewUrl(URL.createObjectURL(blob))
       };
 
@@ -138,8 +161,10 @@ const ScreenRecorder = ({ onVideoRecorded }) => {
   const uploadRecording = async (blob) => {
     setUploading(true);
     try {
-      const file = new File([blob], `screen_recording_${Date.now()}.webm`, {
-        type: 'video/webm'
+      const mimeType = blob?.type || recordedMimeType || 'video/webm'
+      const extension = getRecordingExtension(mimeType)
+      const file = new File([blob], `screen_recording_${Date.now()}.${extension}`, {
+        type: mimeType
       });
 
       const formData = new FormData();
@@ -215,14 +240,13 @@ const ScreenRecorder = ({ onVideoRecorded }) => {
         {showPreview && (
           <div className="relative aspect-video bg-gray-900 rounded-lg overflow-hidden mb-4 border border-gray-700">
             {recordedPreviewUrl ? (
-              <div className="p-4">
-                <VideoPlayer
-                  url={recordedPreviewUrl}
-                  title="Screen recording preview"
-                  fit="contain"
-                  showHighlights={false}
-                />
-              </div>
+              <video
+                src={recordedPreviewUrl}
+                className="w-full h-full object-contain bg-black"
+                controls
+                playsInline
+                preload="metadata"
+              />
             ) : (
               <video 
                 ref={videoPreviewRef}

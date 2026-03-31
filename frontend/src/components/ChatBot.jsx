@@ -4,6 +4,12 @@ import { ChatBubbleLeftRightIcon, PaperAirplaneIcon, SparklesIcon } from '@heroi
 import { chatbotAPI } from '../services/api'
 import VoiceMessagePlayer from './VoiceMessagePlayer'
 
+const DEFAULT_SUGGESTED_QUESTIONS = [
+  'What is this video about?',
+  'Give me a short summary.',
+  'What are the key takeaways?',
+]
+
 function formatTimestampLabel(totalSeconds) {
   const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0))
   const hours = Math.floor(seconds / 3600)
@@ -119,9 +125,11 @@ function ChatBot({ videoId, momentContext = null, onClearMomentContext = null, o
   const loadSuggestedQuestions = async () => {
     try {
       const response = await chatbotAPI.getSuggestedQuestions(videoId)
-      setSuggestedQuestions(response.data.questions || [])
+      const questions = Array.isArray(response?.data?.questions) ? response.data.questions : []
+      setSuggestedQuestions(questions.length > 0 ? questions : DEFAULT_SUGGESTED_QUESTIONS)
     } catch (error) {
       console.error('Failed to load suggested questions:', error)
+      setSuggestedQuestions(DEFAULT_SUGGESTED_QUESTIONS)
     }
   }
 
@@ -429,7 +437,7 @@ function ChatBot({ videoId, momentContext = null, onClearMomentContext = null, o
         )}
       </div>
 
-      {messages.length < 2 && suggestedQuestions.length > 0 && (
+      {messages.length === 0 && suggestedQuestions.length > 0 && (
         <div className="chatbot-shell-footer p-4">
           <p className="text-xs text-white/40 mb-3">Suggested questions:</p>
           <div className="flex flex-wrap gap-2">

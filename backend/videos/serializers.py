@@ -79,6 +79,125 @@ def _fidelity_failed_malayalam_summary_payload(transcript):
     return payload
 
 
+def _clean_summary_snippet(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    cleaned = re.sub(r"^\[[^\]]+\]\s*", "", cleaned)
+    return cleaned.strip(" -–—:;,.")
+
+
+def _looks_like_promotional_video(video, inputs) -> bool:
+    title_blob = " ".join([
+        str(getattr(video, "title", "") or ""),
+        str(getattr(video, "description", "") or ""),
+    ]).lower()
+    transcript_blob = str(inputs.get("transcript_text", "") or "").lower()
+    promo_markers = (
+        "trailer",
+        "teaser",
+        "promo",
+        "tv spot",
+        "official trailer",
+        "brand new day",
+        "first look",
+    )
+    return any(marker in title_blob for marker in promo_markers) or (
+        "trailer" in transcript_blob and "official" in transcript_blob
+    )
+
+
+def _looks_unreal_promotional_summary(payload) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    joined = " ".join(
+        [str(payload.get("tldr", "") or "")]
+        + [str(item or "") for item in (payload.get("key_points") or [])]
+        + [str((item or {}).get("title", "") or "") for item in (payload.get("chapters") or []) if isinstance(item, dict)]
+    ).lower()
+    suspicious_markers = (
+        "this interview",
+        "career highlights",
+        "personal life",
+        "personal questions",
+        "hobbies",
+        "casual conversation",
+        "other go",
+    )
+    return any(marker in joined for marker in suspicious_markers)
+
+
+def _snippet_to_chapter_title(text: str, fallback_index: int) -> str:
+    cleaned = _clean_summary_snippet(text)
+    if not cleaned:
+        return f"Trailer Moment {fallback_index}"
+    cleaned = re.sub(r"[\"'`]+", "", cleaned)
+    words = cleaned.split()
+    if not words:
+        return f"Trailer Moment {fallback_index}"
+    short = " ".join(words[:6]).strip()
+    return short[:1].upper() + short[1:]
+
+
+def _build_promotional_structured_summary(video, inputs):
+    segments = [
+        seg for seg in (inputs.get("segments") or inputs.get("raw_segments") or [])
+        if isinstance(seg, dict) and _clean_summary_snippet(seg.get("text", ""))
+    ]
+    transcript_text = _clean_summary_snippet(inputs.get("transcript_text", ""))
+    if not segments and not transcript_text:
+        return default_structured_summary()
+
+    unique_snippets = []
+    seen = set()
+    for seg in segments:
+        snippet = _clean_summary_snippet(seg.get("text", ""))
+        if len(snippet.split()) < 3:
+            continue
+        key = snippet.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_snippets.append({
+            "text": snippet,
+            "start": float(seg.get("start", 0.0) or 0.0),
+        })
+        if len(unique_snippets) >= 6:
+            break
+
+    if not unique_snippets and transcript_text:
+        sentence_parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", transcript_text) if part.strip()]
+        for idx, snippet in enumerate(sentence_parts[:6], start=1):
+            unique_snippets.append({"text": _clean_summary_snippet(snippet), "start": float((idx - 1) * 20)})
+
+    title = re.sub(r"\b(?:official|final|new|brand new day|trailer|teaser|promo|tv spot)\b", "", str(getattr(video, "title", "") or ""), flags=re.IGNORECASE)
+    title = re.sub(r"\s+", " ", title).strip(" -–—:;,.")
+    lead = f"This trailer for {title}" if title else "This trailer"
+    tldr_parts = []
+    if unique_snippets:
+        first = unique_snippets[0]["text"]
+        tldr_parts.append(f"{lead} highlights {first[:1].lower() + first[1:] if len(first) > 1 else first.lower()}.")
+    if len(unique_snippets) > 1:
+        second = unique_snippets[1]["text"]
+        tldr_parts.append(f"It also features {second[:1].lower() + second[1:] if len(second) > 1 else second.lower()}.")
+    tldr = " ".join(tldr_parts).strip() or f"{lead} highlights moments from the video."
+
+    key_points = [item["text"] for item in unique_snippets[:4]]
+    chapters = [
+        {
+            "timestamp": f"{int(item['start']) // 60:02d}:{int(item['start']) % 60:02d}",
+            "title": _snippet_to_chapter_title(item["text"], index + 1),
+        }
+        for index, item in enumerate(unique_snippets[:5])
+    ]
+
+    return {
+        "tldr": tldr,
+        "key_points": key_points,
+        "action_items": [],
+        "chapters": chapters,
+        "summary_state": "promo_safe_grounded",
+    }
+
+
 def _blocked_transcript_english_view_payload(source_language: str, blocked_reason: str, warning: str = ""):
     return {
         "original_language": source_language,
@@ -962,6 +1081,7 @@ def get_or_build_structured_summary(video, transcript):
         return payload
 
     inputs = _extract_structured_summary_inputs(video, transcript)
+    promo_mode = _looks_like_promotional_video(video, inputs)
     if (
         str(inputs.get("transcript_state", "") or "").strip().lower() == "degraded"
         and str(inputs.get("transcript_language", "") or "").strip().lower() == "ml"
@@ -984,6 +1104,8 @@ def get_or_build_structured_summary(video, transcript):
     cached = json_data.get('structured_summary_cache', {})
     if isinstance(cached, dict) and cached.get('cache_key') == cache_key and isinstance(cached.get('payload'), dict):
         payload = cached.get('payload')
+        if promo_mode and _looks_unreal_promotional_summary(payload):
+            payload = _build_promotional_structured_summary(video, inputs)
         if _structured_summary_has_content(payload):
             logger.info(
                 "[STRUCTURED_SUMMARY_CACHE] served_from_cache=True video_id=%s cache_key=%s transcript_hash=%s",
@@ -1013,6 +1135,14 @@ def get_or_build_structured_summary(video, transcript):
         return _augment_structured_summary_with_english_view(payload, transcript)
 
     payload = build_structured_summary(**build_inputs)
+    if promo_mode and _looks_unreal_promotional_summary(payload):
+        logger.info(
+            "[STRUCTURED_SUMMARY_PROMO_SAFE_FALLBACK] video_id=%s cache_key=%s transcript_hash=%s",
+            inputs["video_id"],
+            cache_key,
+            inputs["transcript_hash"],
+        )
+        payload = _build_promotional_structured_summary(video, inputs)
     if not _structured_summary_has_content(payload):
         if degraded_fallback:
             logger.info(

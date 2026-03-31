@@ -388,6 +388,15 @@ def _classify_youtube_download_failure(stderr: str) -> dict:
     bot_blocked = 'sign in to confirm you’' in lowered or "sign in to confirm you're not a bot" in lowered or 'not a bot' in lowered
     js_runtime_missing = 'no supported javascript runtime could be found' in lowered
     cookies_needed = '--cookies-from-browser' in lowered or '--cookies' in lowered or 'exporting youtube cookies' in lowered
+    browser_cookie_unavailable = (
+        'could not find edge cookies database' in lowered
+        or 'could not find chrome cookies database' in lowered
+        or 'could not find cookies database' in lowered
+        or 'failed to load cookies from browser' in lowered
+        or 'could not copy edge cookie database' in lowered
+        or 'could not copy chrome cookie database' in lowered
+        or 'browser cookies are only supported on' in lowered
+    )
 
     if rate_limited or bot_blocked:
         return {
@@ -398,6 +407,15 @@ def _classify_youtube_download_failure(stderr: str) -> dict:
                 'The app should retry with hardened yt-dlp settings and browser-cookie fallback, '
                 'but this video still needs an authenticated browser-cookie path or a later retry.'
             ),
+            'detail': message,
+            'js_runtime_missing': js_runtime_missing,
+            'cookies_needed': cookies_needed,
+        }
+    if browser_cookie_unavailable:
+        return {
+            'blocked_reason': 'youtube_browser_cookie_unavailable',
+            'retryable': True,
+            'message': 'Browser cookie fallback was unavailable on the current server.',
             'detail': message,
             'js_runtime_missing': js_runtime_missing,
             'cookies_needed': cookies_needed,
@@ -453,6 +471,7 @@ def _download_youtube_audio(video_url: str, audio_path: str) -> None:
         attempts.append((f'cookies:{browser}', _build_ytdlp_command(video_url, audio_path, browser=browser)))
 
     last_error = None
+    preferred_error = None
     for attempt_name, command in attempts:
         logger.info("[YT_DOWNLOAD_ATTEMPT] mode=%s url=%s", attempt_name, video_url)
         result = subprocess.run(
@@ -476,13 +495,25 @@ def _download_youtube_audio(video_url: str, audio_path: str) -> None:
             bool(classification.get('js_runtime_missing', False)),
             bool(classification.get('cookies_needed', False)),
         )
-        if classification.get('blocked_reason') != 'youtube_bot_protection':
+        blocked_reason = classification.get('blocked_reason')
+        if blocked_reason == 'youtube_bot_protection':
+            preferred_error = classification
+            continue
+        if blocked_reason == 'youtube_browser_cookie_unavailable' and attempt_name.startswith('cookies:'):
+            continue
+        if attempt_name == 'default' and classification.get('retryable', False):
+            preferred_error = classification
+            continue
+        if preferred_error and blocked_reason == 'youtube_download_failed':
+            last_error = preferred_error
             break
+        break
 
-    if last_error:
-        detail = str(last_error.get('detail', '') or '').strip()
+    final_error = last_error or preferred_error
+    if final_error:
+        detail = str(final_error.get('detail', '') or '').strip()
         raise Exception(
-            f"{last_error.get('message', 'YouTube audio download failed.')}"
+            f"{final_error.get('message', 'YouTube audio download failed.')}"
             + (f" Details: {detail}" if detail else "")
         )
     raise Exception("YouTube audio download failed.")
@@ -2813,12 +2844,27 @@ def _run_audio_pipeline(
         if getattr(settings, 'RENDER_TRANSCRIPT_ONLY_MODE', False):
             render_safe_summary_mode = bool(getattr(settings, 'RENDER_SAFE_SUMMARY_MODE', False))
             if render_safe_summary_mode:
+                requested_summary_types = list(getattr(settings, 'RENDER_SAFE_SUMMARY_TYPES', ['short', 'bullet']) or ['short', 'bullet'])
+                safe_summary_types = [summary_type for summary_type in requested_summary_types if summary_type in {'short', 'bullet', 'full'}]
+                if not safe_summary_types:
+                    safe_summary_types = ['short', 'bullet']
+                if float(video.duration or 0.0) <= 180.0 and 'full' not in safe_summary_types:
+                    safe_summary_types.append('full')
                 logger.warning(
-                    "[RENDER_SAFE_SUMMARY_MODE] video_id=%s transcript_id=%s building_structured_summary_only=true skipping_highlights_indexing=true",
+                    "[RENDER_SAFE_SUMMARY_MODE] video_id=%s transcript_id=%s summary_types=%s building_structured_summary_with_groq=true skipping_highlights_indexing=true",
                     getattr(video, 'id', ''),
                     getattr(transcript_obj, 'id', ''),
+                    ",".join(safe_summary_types),
                 )
                 try:
+                    summary_runtime_rows.extend(_upsert_all_summaries(
+                        video,
+                        transcript_obj,
+                        summary_types=safe_summary_types,
+                        output_language=resolved_output_language,
+                        source_language=source_language,
+                        summary_language_mode=summary_language_mode,
+                    ) or [])
                     from .serializers import get_or_build_structured_summary
                     get_or_build_structured_summary(video, transcript_obj)
                     if isinstance(transcript_obj.json_data, dict):

@@ -315,6 +315,11 @@ RENDER_SAFE_CHATBOT_MODE = os.environ.get(
     'RENDER_SAFE_CHATBOT_MODE',
     'True' if ON_RENDER and DEV_SYNC_MODE else 'False'
 ).lower() in ('true', '1', 'yes')
+RENDER_SAFE_SUMMARY_TYPES = [
+    item.strip().lower()
+    for item in os.environ.get('RENDER_SAFE_SUMMARY_TYPES', 'short,bullet').split(',')
+    if item.strip()
+]
 RENDER_DEMO_SAFE_ASR_MODE = os.environ.get(
     'RENDER_DEMO_SAFE_ASR_MODE',
     'True' if ON_RENDER and DEV_SYNC_MODE else 'False'

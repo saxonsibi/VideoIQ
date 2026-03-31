@@ -378,6 +378,8 @@ def _youtube_cookie_browsers() -> list[str]:
         return [item.strip() for item in configured.split(',') if item.strip()]
     if isinstance(configured, (list, tuple)):
         return [str(item).strip() for item in configured if str(item).strip()]
+    if bool(getattr(settings, 'ON_RENDER', False)):
+        return []
     return ['edge', 'chrome']
 
 

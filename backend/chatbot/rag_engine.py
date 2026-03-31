@@ -1218,6 +1218,48 @@ class ChatbotEngine:
             transcript_signature=self._current_transcript_signature(),
         )
 
+    def ask_safe_summary_only(self, question: str, response_language: str = 'en') -> Dict:
+        """
+        Lightweight Render-safe chatbot path.
+
+        Answers broad summary-style questions from structured summary/chapter data
+        without loading or building a transcript vector index.
+        """
+        normalized_response_language = _normalize_response_language(response_language, default='en')
+        intent, _top_k = self._detect_intent_and_top_k(question)
+        structured_summary, summary_support_segments = self._load_structured_summary_support()
+
+        answer = ""
+        sources = summary_support_segments[:4]
+
+        if intent in {'summary', 'global_summary'}:
+            answer, fallback_segments = self._answer_from_summary_and_chapters()
+            if fallback_segments:
+                sources = fallback_segments[:4]
+        elif self._is_takeaways_query(question):
+            answer = self._answer_from_bullet_summary() or self._answer_from_full_summary_bullets() or ""
+        elif structured_summary:
+            tldr = str(structured_summary.get('tldr', '') or '').strip()
+            key_points = structured_summary.get('key_points') or []
+            if tldr:
+                answer = self._format_answer_response(tldr, key_points[:self.chat_key_points_max])
+
+        if not answer:
+            fallback = (
+                "The live demo chatbot currently supports summary-style questions only. "
+                "Try asking what the video is about, the main points, key takeaways, or a short summary."
+            )
+            return {
+                'answer': self._translate_answer_language(self._fallback_answer_response(fallback), normalized_response_language),
+                'sources': sources,
+                'error': 'render_safe_chatbot_summary_only',
+            }
+
+        return {
+            'answer': self._translate_answer_language(answer, normalized_response_language),
+            'sources': sources,
+        }
+
     def _is_global_summary_query(self, question: str) -> bool:
         q = (question or '').lower()
         return any(k in q for k in [

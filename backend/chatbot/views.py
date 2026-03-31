@@ -512,7 +512,74 @@ class ChatbotView(APIView):
                         'chatbot_blocked_reason': 'malayalam_source_fidelity_failed' if transcript_fidelity_failed else 'transcript_quality_too_low',
                     })
 
+                # Initialize chatbot engine
+                chatbot = ChatbotEngine(str(video_id))
+
                 if bool(getattr(settings, 'RENDER_TRANSCRIPT_ONLY_MODE', False)):
+                    if bool(getattr(settings, 'RENDER_SAFE_CHATBOT_MODE', False)):
+                        result = chatbot.ask_safe_summary_only(
+                            message,
+                            response_language=output_language,
+                        )
+                        localized_sources = result.get('sources', []) or []
+                        final_answer = str(result.get('answer', '') or '')
+                        raw_answer = final_answer
+                        chat_en_view = _build_chat_english_view(
+                            final_answer,
+                            answer_language=output_language,
+                            transcript=transcript,
+                            translated_english_hint=raw_answer if output_language == 'en' else "",
+                        )
+                        chat_source_hash = build_english_view_source_hash(
+                            "chat",
+                            {
+                                "answer_text": final_answer,
+                                "answer_language": output_language,
+                                "sources": localized_sources,
+                            },
+                        )
+                        chat_cache_entry = build_english_view_cache_entry(
+                            chat_en_view,
+                            source_hash=chat_source_hash,
+                            build_reason="chat_response_render_safe",
+                            source_language=output_language,
+                            policy={
+                                "translation_state": chat_en_view.get("_english_view_policy_mode", chat_en_view.get("translation_state", "")),
+                                "policy_reason": chat_en_view.get("_english_view_policy_reason", ""),
+                                "current_available_views": chat_en_view.get("current_available_views", ["original"]),
+                            },
+                        )
+                        ChatMessage.objects.create(
+                            session=session,
+                            sender='bot',
+                            message=final_answer,
+                            referenced_segments=_pack_chat_sources_with_english_view_cache(localized_sources, chat_cache_entry),
+                            user_language=user_language,
+                            output_language=output_language,
+                            retrieval_language='en',
+                        )
+                        response_data = {
+                            'answer': final_answer,
+                            'sources': localized_sources,
+                            'session_id': str(session.id),
+                            'user_language': user_language,
+                            'output_language': output_language,
+                            'retrieval_language': 'en',
+                            'timestamp_context': _format_timestamp_label(context_timestamp) if context_timestamp is not None else None,
+                            'processing_metadata': build_processing_metadata(video, transcript),
+                            'english_view_answer': chat_en_view.get('english_view_text', ''),
+                            'english_view_available': bool(chat_en_view.get('english_view_available', False)),
+                            'chatbot_answer_language': output_language,
+                            'chatbot_english_view_available': bool(chat_en_view.get('english_view_available', False)),
+                            'chatbot_translation_state': str(chat_en_view.get('translation_state', '') or ''),
+                            'chatbot_translation_warning': str(chat_en_view.get('translation_warning', '') or ''),
+                            'chatbot_translation_blocked_reason': str(chat_en_view.get('translation_blocked_reason', '') or ''),
+                        }
+                        if result.get('error'):
+                            response_data['error'] = result['error']
+                            response_data['chatbot_blocked_reason'] = 'render_safe_summary_only'
+                        return Response(response_data)
+
                     return Response(
                         _render_transcript_only_chat_disabled_response(
                             session_id=session.id,
@@ -522,9 +589,6 @@ class ChatbotView(APIView):
                         ),
                         status=status.HTTP_503_SERVICE_UNAVAILABLE,
                     )
-                
-                # Initialize chatbot engine
-                chatbot = ChatbotEngine(str(video_id))
                 
                 # Build index if needed
                 index_exists = chatbot.initialize()

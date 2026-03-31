@@ -843,7 +843,7 @@ def get_or_build_structured_summary(video, transcript):
     if not transcript:
         return _build_structured_summary_from_legacy_summaries(video)
 
-    if bool(getattr(settings, 'RENDER_TRANSCRIPT_ONLY_MODE', False)):
+    if bool(getattr(settings, 'RENDER_TRANSCRIPT_ONLY_MODE', False)) and not bool(getattr(settings, 'RENDER_SAFE_SUMMARY_MODE', False)):
         json_data = transcript.json_data if isinstance(transcript.json_data, dict) else {}
         cached = json_data.get('structured_summary_cache', {})
         if isinstance(cached, dict) and isinstance(cached.get('payload'), dict):

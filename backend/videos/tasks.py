@@ -2811,11 +2811,31 @@ def _run_audio_pipeline(
         _update_video_stage(video, 'transcript_ready', 65)
         summary_started = timezone.now()
         if getattr(settings, 'RENDER_TRANSCRIPT_ONLY_MODE', False):
-            logger.warning(
-                "[RENDER_TRANSCRIPT_ONLY_MODE] video_id=%s transcript_id=%s skipping_summary_highlights_indexing=true",
-                getattr(video, 'id', ''),
-                getattr(transcript_obj, 'id', ''),
-            )
+            render_safe_summary_mode = bool(getattr(settings, 'RENDER_SAFE_SUMMARY_MODE', False))
+            if render_safe_summary_mode:
+                logger.warning(
+                    "[RENDER_SAFE_SUMMARY_MODE] video_id=%s transcript_id=%s building_structured_summary_only=true skipping_highlights_indexing=true",
+                    getattr(video, 'id', ''),
+                    getattr(transcript_obj, 'id', ''),
+                )
+                try:
+                    from .serializers import get_or_build_structured_summary
+                    get_or_build_structured_summary(video, transcript_obj)
+                    if isinstance(transcript_obj.json_data, dict):
+                        structured_quality_score = float(
+                            (
+                                transcript_obj.json_data.get('structured_summary_cache', {})
+                                or {}
+                            ).get('quality_score', 0.0) or 0.0
+                        )
+                except Exception as exc:
+                    logger.warning("Render safe structured summary build failed: %s", exc)
+            else:
+                logger.warning(
+                    "[RENDER_TRANSCRIPT_ONLY_MODE] video_id=%s transcript_id=%s skipping_summary_highlights_indexing=true",
+                    getattr(video, 'id', ''),
+                    getattr(transcript_obj, 'id', ''),
+                )
             summary_seconds = max(0.0, float((timezone.now() - summary_started).total_seconds()))
         elif pending_malayalam_final_state:
             logger.info(

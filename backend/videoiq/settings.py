@@ -4,6 +4,7 @@ Django settings for VideoIQ AI Video Intelligence System project.
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 from django.core.exceptions import ImproperlyConfigured
 import dj_database_url
 from dotenv import load_dotenv, dotenv_values
@@ -190,6 +191,16 @@ if USE_S3_MEDIA_STORAGE:
     AWS_QUERYSTRING_AUTH = os.environ.get('AWS_QUERYSTRING_AUTH', 'False').lower() in ('true', '1', 'yes')
     AWS_S3_FILE_OVERWRITE = os.environ.get('AWS_S3_FILE_OVERWRITE', 'False').lower() in ('true', '1', 'yes')
     AWS_LOCATION = os.environ.get('AWS_LOCATION', '').strip()
+    _supabase_public_media_domain = ''
+    if not AWS_S3_CUSTOM_DOMAIN and AWS_S3_ENDPOINT_URL:
+        parsed_endpoint = urlparse(AWS_S3_ENDPOINT_URL)
+        if parsed_endpoint.netloc and parsed_endpoint.path.rstrip('/').endswith('/storage/v1/s3'):
+            media_prefix = f"/{AWS_LOCATION.strip('/')}" if AWS_LOCATION.strip('/') else ''
+            _supabase_public_media_domain = (
+                f"{parsed_endpoint.netloc}/storage/v1/object/public/"
+                f"{AWS_STORAGE_BUCKET_NAME}{media_prefix}"
+            )
+    _resolved_media_custom_domain = AWS_S3_CUSTOM_DOMAIN or _supabase_public_media_domain
 
     STORAGES = {
         'default': {
@@ -200,7 +211,7 @@ if USE_S3_MEDIA_STORAGE:
                 'bucket_name': AWS_STORAGE_BUCKET_NAME,
                 'region_name': AWS_S3_REGION_NAME or None,
                 'endpoint_url': AWS_S3_ENDPOINT_URL or None,
-                'custom_domain': AWS_S3_CUSTOM_DOMAIN or None,
+                'custom_domain': _resolved_media_custom_domain or None,
                 'default_acl': AWS_DEFAULT_ACL,
                 'querystring_auth': AWS_QUERYSTRING_AUTH,
                 'file_overwrite': AWS_S3_FILE_OVERWRITE,
@@ -212,8 +223,8 @@ if USE_S3_MEDIA_STORAGE:
         },
     }
 
-    if AWS_S3_CUSTOM_DOMAIN:
-        MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/"
+    if _resolved_media_custom_domain:
+        MEDIA_URL = f"https://{_resolved_media_custom_domain}/"
     elif AWS_STORAGE_BUCKET_NAME and AWS_S3_ENDPOINT_URL:
         cleaned_endpoint = AWS_S3_ENDPOINT_URL.rstrip('/')
         media_prefix = f"/{AWS_LOCATION.strip('/')}" if AWS_LOCATION.strip('/') else ''

@@ -7,6 +7,7 @@ import logging
 import json
 import re
 from hashlib import sha1
+from django.conf import settings
 from rest_framework import serializers
 from .models import Video, Transcript, Summary, HighlightSegment, ShortVideo, ProcessingTask
 from .summary_schema import build_structured_summary, default_structured_summary, structured_summary_cache_key

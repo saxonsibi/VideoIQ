@@ -37,6 +37,8 @@ urlpatterns = [
 
     # App URLs with API v1 prefix
     path('api/v1/videos/', include('videos.urls')),
+    path('api/v1/chatbot/', include('chatbot.urls')),
+    path('api/v1/summarizer/', include('summarizer.urls')),
     path('api/extension/', include('videos.extension_urls')),
 ]
 
@@ -59,8 +61,6 @@ if not getattr(settings, 'RENDER_TRANSCRIPT_ONLY_MODE', False):
     urlpatterns += [
         path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
         path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
-        path('api/v1/chatbot/', include('chatbot.urls')),
-        path('api/v1/summarizer/', include('summarizer.urls')),
     ]
 
 # SPA fallback route (must be after API routes).
